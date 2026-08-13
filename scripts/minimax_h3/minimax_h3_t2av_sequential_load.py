@@ -4,6 +4,7 @@
 import os
 
 import torch
+import torch.distributed as dist
 from loguru import logger
 
 import lightx2v.infer as infer_module
@@ -30,13 +31,16 @@ def _load_text_only(self):
 
 def _save_prompt_cache(self):
     encoded = self.inputs["text_encoder_output"]
-    cache = {
-        "prompt": self.input_info.prompt,
-        "prompt_embeds": encoded["prompt_embeds"].cpu(),
-        "text_token_tags": encoded["text_token_tags"].cpu(),
-    }
-    torch.save(cache, _PROMPT_CACHE)
-    logger.info("MiniMax-H3 prompt cache saved to {}", _PROMPT_CACHE)
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        cache = {
+            "prompt": self.input_info.prompt,
+            "prompt_embeds": encoded["prompt_embeds"].cpu(),
+            "text_token_tags": encoded["text_token_tags"].cpu(),
+        }
+        torch.save(cache, _PROMPT_CACHE)
+        logger.info("MiniMax-H3 prompt cache saved to {}", _PROMPT_CACHE)
+    if dist.is_initialized():
+        dist.barrier()
     return {"video": None, "audio": None}
 
 
@@ -67,6 +71,7 @@ def _infer_blocks_synchronously(self, blocks, hidden_states, pre_infer_out):
     for block_index, source_block in enumerate(blocks):
         compute_buffer.load_state_dict(source_block.state_dict(), block_index)
         getattr(torch, AI_DEVICE).synchronize()
+        self.block_idx = block_index
         hidden_states = self.run_block(block_index, compute_buffer, hidden_states, pre_infer_out)
         getattr(torch, AI_DEVICE).synchronize()
     manager.need_init_first_buffer = False
